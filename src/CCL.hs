@@ -1,4 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE BlockArguments #-}
 module CCL where
 
 import Data.Text (Text)
@@ -11,6 +13,8 @@ import Text.Megaparsec.Char
 import Data.Text qualified as T
 import Text.Megaparsec.Char.Lexer qualified as L
 import qualified Data.Map as M
+import Data.Maybe (fromMaybe)
+import Control.Monad (void)
 
 ----------------------------------------
 -- Data Types
@@ -52,6 +56,55 @@ mapToEntry = Entry . M.map normalizeentries
         SimpleEntry s -> Entry $ M.singleton s emptyEntry
         NestedEntry em -> mapToEntry em
 
+insertKV :: EntryMap -> KV -> EntryMap
+insertKV emap (KV k v) =
+    let newEntry = either
+                       (const $ SimpleEntry v)
+                       (NestedEntry . kvsToEntryMap)
+                       (parseValue v)
+     in M.alter (\mlist -> Just (newEntry : fromMaybe [] mlist)) k emap
+
+kvsToEntryMap :: [KV] -> EntryMap
+kvsToEntryMap = foldl' insertKV M.empty
+
+parseValue :: String -> Either a0 b0
+parseValue = undefined
+
+kvsToEntry :: [KV] -> Entry
+kvsToEntry = mapToEntry . kvsToEntryMap
+
+-- Pretty Print
+ppEntry :: Entry -> String
+ppEntry = concat . fmtentry 0
+  where
+    fmtentry :: Int -> Entry -> [String]
+    fmtentry indent (Entry m) =
+        M.foldrWithKey (\k v acc ->
+            indentline indent k :
+            fmtentry (indent + 4) v ++ acc) [] m
+    indentline n keyname =
+        replicate n ' ' ++ keyname ++ " =\n"
+
+----------------------------------------
+-- DSL
+----------------------------------------
+
+mkEntry :: String -> Entry
+mkEntry = Entry . (`M.singleton` emptyEntry)
+
+mkEntryKv :: String -> String -> Entry
+mkEntryKv k = Entry . M.singleton k . mkEntry
+
+mergeEntryList :: [Entry] -> Entry
+mergeEntryList = foldl' mergeEntries emptyEntry
+
+mkNested :: String -> [Entry] -> Entry
+mkNested k = Entry . M.singleton k . mergeEntryList
+
+infixl 8 |=
+(|=) :: String -> String -> Entry
+(|=) = mkEntryKv
+
 ----------------------------------------
 -- Parser
 ----------------------------------------
@@ -76,6 +129,9 @@ strip = T.unpack . T.strip . T.pack
 
 emptyP :: Parser String
 emptyP = T.unpack <$> string ""
+
+skipBlanks :: Parser ()
+skipBlanks = skipMany (hspace <|> void newline)
 
 keyP :: Parser String
 keyP = strip <$>
@@ -105,6 +161,26 @@ valueP = label "value" $ do
         T.intercalate "\n" $
         T.pack <$> (fstLine : restLines)
 
+valP :: Int -> Parser String
+valP minIndent = do
+    skipMany hspace
+    frst <- many (satisfy (/= '\n'))
+    rest <- many $ try parserest
+    pure $ frst ++ concat rest
+  where
+    indentedline spcs = do
+        line <- many (satisfy (/= '\n'))
+        _ <- optional newline
+        pure $ "\n" ++ spcs ++ line
+    parserest = do
+        _    <- newline
+        spcs <- many (char ' ' <|> char '\t')
+        let n = length spcs
+        next <- optional (lookAhead anySingle)
+        if | n == 0 && next == Just '\n' -> newline >> pure "\n"
+           |        n > minIndent        -> indentedline spcs
+           |          otherwise          -> empty
+
 restLinesF :: Parser String
 restLinesF = label "restlinefn" $ do
     ls <- many . try $ do
@@ -112,6 +188,36 @@ restLinesF = label "restlinefn" $ do
         notFollowedBy (try keyStart)
         lineContent
     pure $ concat ls
+
+kvP :: Int -> Parser KV
+kvP minIndent = do
+    key' <- many (satisfy (/= '\n'))
+    skipBlanks
+    _ <- eqP
+    val' <- valP minIndent
+    skipBlanks
+    pure $ KV (strip key') (strip val')
+
+kvsP :: Parser [KV]
+kvsP = skipBlanks *> many (kvP 0)
+
+nested :: Parser [KV]
+nested = do
+    m <- optional (lookAhead anySingle)
+    case m of
+        Nothing -> pure []
+        Just '\n' -> do
+            _ <- newline
+            spaces <- many (char ' ' <|> char '\t')
+            let indent = length spaces
+            many (kvP indent)
+        Just _ -> pure <$> kvP 0
+
+parseKVs :: Text -> Either (ParseErrorBundle Text Void) [KV]
+parseKVs = parse (kvsP <* eof) ""
+
+parseNested :: Text -> Either (ParseErrorBundle Text Void) [KV]
+parseNested = parse (nested <* eof) ""
 
 -- kvP :: Parser KV
 -- kvP = label "key value pair" $ do
