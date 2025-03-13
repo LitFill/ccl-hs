@@ -42,32 +42,36 @@ strip = T.unpack . T.strip . T.pack
 
 keyP :: Parser String
 keyP = strip <$>
-    lexeme (many (noneOf ("=":: String))) <?> "key"
+    lexeme (many (noneOf ("=\n":: String))) <?> "key"
+
+keyStart :: Parser ()
+keyStart = do
+    _ <- sc
+    _ <- many (noneOf ['=', '\n'])
+    _ <- eqP
+    pure ()
+
+lineContent :: Parser String
+lineContent = many (noneOf ['\n'])
 
 valueP :: Parser String
-valueP = strip <$>
-    lexeme (many printChar) <?> "value"
-
-nonChar :: Char -> Parser Char
-nonChar c =
-    L.charLiteral >>= \c' ->
-        if c' == c
-            then fail $ "Unexpected " ++ show c
-            else pure c'
-
-keyP' :: Parser String
-keyP' = strip <$> many (try $ nonChar '=')
-
-valueP' :: Parser String
-valueP' = strip <$> many (try $ nonChar '\n')
+valueP = do
+    _         <- eqP
+    fstLine   <- lineContent
+    restLines <- many . try $ do
+        _ <- newline
+        notFollowedBy (try keyStart)
+        lineContent
+    pure .
+        T.unpack .
+        T.strip .
+        T.intercalate "\n" $
+        T.pack <$> (fstLine : restLines)
 
 kvP :: Parser KV
 kvP = do
     k <- keyP
-    _ <- eqP
-    space
     v <- valueP
-    space
     pure $ KV k v
 
 configP :: Parser [KV]
