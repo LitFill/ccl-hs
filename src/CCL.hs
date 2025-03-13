@@ -3,26 +3,54 @@ module CCL where
 
 import Data.Text (Text)
 import Data.Void (Void)
+import Data.Map (Map)
 
 import Text.Megaparsec
 import Text.Megaparsec.Char
 
 import Data.Text qualified as T
 import Text.Megaparsec.Char.Lexer qualified as L
+import qualified Data.Map as M
 
 ----------------------------------------
 -- Data Types
 ----------------------------------------
 
-data KV where
-    KV :: {key :: String, value :: Value}
-        -> KV
+type EntryMap = Map String [EntryValue]
+
+data EntryValue where
+    SimpleEntry :: String   -> EntryValue
+    NestedEntry :: EntryMap -> EntryValue
     deriving (Show, Eq)
 
-data Value where
-    Simple :: String -> Value
-    Block  :: [KV]   -> Value
+newtype Entry where
+    Entry :: { unEntry :: Map String Entry }
+          -> Entry
     deriving (Show, Eq)
+
+data KV where
+    KV :: { key :: String, val :: String }
+       -> KV
+    deriving (Show, Eq)
+
+----------------------------------------
+-- Simple Operations
+----------------------------------------
+
+emptyEntry :: Entry
+emptyEntry = Entry M.empty
+
+mergeEntries :: Entry -> Entry -> Entry
+mergeEntries (Entry m1) (Entry m2) =
+    Entry $ M.unionWith mergeEntries m1 m2
+
+mapToEntry :: EntryMap -> Entry
+mapToEntry = Entry . M.map normalizeentries
+  where
+    normalizeentries = foldl' mergeEntries emptyEntry . map normalizevalues
+    normalizevalues  = \case
+        SimpleEntry s -> Entry $ M.singleton s emptyEntry
+        NestedEntry em -> mapToEntry em
 
 ----------------------------------------
 -- Parser
@@ -91,26 +119,26 @@ restLinesF = label "restlinefn" $ do
 --     v <- valueP
 --     pure $ KV k v
 
-kvP' :: Parser KV
-kvP' = label "key value pair" $ do
-    indentPos <- L.indentLevel
-    k <- keyP
-    _ <- eqP
-    space
-    v <- strip <$> manyTill anySingle newline
-    if null v then do
-        block <- many $ do
-            _ <- L.indentGuard space GT indentPos
-            kvP'
-        pure $ KV k (Block block)
-    else
-        pure $ KV k (Simple v)
+-- kvP' :: Parser KV
+-- kvP' = label "key value pair" $ do
+--     indentPos <- L.indentLevel
+--     k <- keyP
+--     _ <- eqP
+--     space
+--     v <- strip <$> manyTill anySingle newline
+--     if null v then do
+--         block <- many $ do
+--             _ <- L.indentGuard space GT indentPos
+--             kvP'
+--         pure $ KV k (Block block)
+--     else
+--         pure $ KV k (Simple v)
 
-configP :: Parser [KV]
-configP = label "config" $ do kvP' `sepBy` newline <* eof
+-- configP :: Parser [KV]
+-- configP = label "config" $ do kvP' `sepBy` newline <* eof
 
-config' :: Parser [KV]
-config' = many kvP' <* eof
+-- config' :: Parser [KV]
+-- config' = many kvP' <* eof
 
 ----------------------------------------
 -- samples
