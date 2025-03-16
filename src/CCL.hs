@@ -14,7 +14,8 @@ import Data.Text qualified as T
 import Text.Megaparsec.Char.Lexer qualified as L
 import qualified Data.Map as M
 import Data.Maybe (fromMaybe)
-import Control.Monad (void)
+import Control.Monad (void, (>=>))
+import qualified Data.Text.IO as TIO
 
 ----------------------------------------
 -- Data Types
@@ -135,7 +136,7 @@ skipBlanks = skipMany (hspace <|> void newline)
 
 keyP :: Parser String
 keyP = strip <$>
-    lexeme (many (noneOf (" =":: String))) <?> "key"
+    lexeme (many (noneOf ("=":: String))) <?> "key"
 
 keyStart :: Parser ()
 keyStart = label "key-start" $ do
@@ -161,9 +162,65 @@ valueP = label "value" $ do
         T.intercalate "\n" $
         T.pack <$> (fstLine : restLines)
 
+----------------------------------------
+-- nested experiment
+----------------------------------------
+
+-- pewaris =
+--     ibn = 2
+--     ab  = 1
+--     um  = 1
+
+-- KV { key = "pewaris", value = "    ibn = 2\n    ab  = 1\n    um  = 1"}
+
+-- take key
+-- take =
+-- check not \n
+--   t -> take until \n
+--   f -> take \n
+--        check indented
+--          f -> val is ""
+--          t -> take until \n
+--               check indented :loop
+
+nestedKVP :: Parser KV
+nestedKVP = do
+    k   <- many (satisfy (/= '='))
+    _   <- char '='
+    mnl <- optional (lookAhead anySingle)
+    v   <- case mnl of
+        Nothing -> error "eof"
+        Just '\n' -> parseindented
+        Just _ -> many (satisfy (/= '\n'))
+    pure $ KV (strip k) v
+  where
+    parseindented = do
+        _  <- newline
+        ls <- fmap strip <$> some indentedline'
+        pure (unlines ls)
+
+indentedlines :: Parser [String]
+indentedlines =
+    manyTill indentedline' (lookAhead (void nonindentedline) <|> eof)
+
+indentedline' :: Parser String
+indentedline' = do
+    spcs <- some (char ' ')
+    line <- manyTill anySingle (try (void newline) <|> eof)
+    pure $ spcs ++ line
+
+nonindentedline :: Parser String
+nonindentedline = do
+    notFollowedBy (char ' ' <|> char '\t')
+    manyTill anySingle (try (void newline) <|> eof)
+
+----------------------------------------
+-- END nested experiment
+----------------------------------------
+
 valP :: Int -> Parser String
 valP minIndent = do
-    skipMany hspace
+    -- skipMany hspace
     frst <- many (satisfy (/= '\n'))
     rest <- many $ try parserest
     pure $ frst ++ concat rest
@@ -179,7 +236,7 @@ valP minIndent = do
         next <- optional (lookAhead anySingle)
         if | n == 0 && next == Just '\n' -> newline >> pure "\n"
            |        n > minIndent        -> indentedline spcs
-           |          otherwise          -> empty
+           |          otherwise          -> indentedline ""
 
 restLinesF :: Parser String
 restLinesF = label "restlinefn" $ do
@@ -189,17 +246,27 @@ restLinesF = label "restlinefn" $ do
         lineContent
     pure $ concat ls
 
+kvP' :: Parser KV
+kvP' = do
+    key' <- keyP
+    val' <- valueP
+    pure $ KV key' val'
+
 kvP :: Int -> Parser KV
 kvP minIndent = do
-    key' <- many (satisfy (/= '\n'))
-    skipBlanks
+    -- key' <- many (satisfy (/= '\n'))
+    key' <- keyP
+    -- skipBlanks
     _ <- eqP
     val' <- valP minIndent
-    skipBlanks
-    pure $ KV (strip key') (strip val')
+    -- skipBlanks
+    pure $ KV key' (strip val')
 
 kvsP :: Parser [KV]
 kvsP = skipBlanks *> many (kvP 0)
+
+kvsP' :: Parser [KV]
+kvsP' =  many kvP'
 
 nested :: Parser [KV]
 nested = do
@@ -218,6 +285,9 @@ parseKVs = parse (kvsP <* eof) ""
 
 parseNested :: Text -> Either (ParseErrorBundle Text Void) [KV]
 parseNested = parse (nested <* eof) ""
+
+parseFile :: FilePath -> IO ()
+parseFile = TIO.readFile >=> parseTest (kvsP' <* eof)
 
 -- kvP :: Parser KV
 -- kvP = label "key value pair" $ do
