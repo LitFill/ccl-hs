@@ -1,7 +1,16 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE BlockArguments #-}
-module CCL where
+module CCL
+  ( manyTill
+  , eof
+  , indentedline'
+  , parseFile
+  , Parser
+  , parseFileWith
+  , try
+  )
+  where
 
 import Data.Text (Text)
 import Data.Void (Void)
@@ -38,6 +47,16 @@ data KV where
        -> KV
     deriving (Show, Eq)
 
+data KV2 where
+    KV2 :: { key2 :: String, val2 :: Value }
+       -> KV2
+    deriving (Show, Eq)
+
+data Value where
+    S :: String -> Value
+    N :: KV2    -> Value
+    deriving (Show, Eq)
+
 ----------------------------------------
 -- Simple Operations
 ----------------------------------------
@@ -65,11 +84,11 @@ insertKV emap (KV k v) =
                        (parseValue v)
      in M.alter (\mlist -> Just (newEntry : fromMaybe [] mlist)) k emap
 
+parseValue :: String -> Either a0 [KV]
+parseValue = undefined
+
 kvsToEntryMap :: [KV] -> EntryMap
 kvsToEntryMap = foldl' insertKV M.empty
-
-parseValue :: String -> Either a0 b0
-parseValue = undefined
 
 kvsToEntry :: [KV] -> Entry
 kvsToEntry = mapToEntry . kvsToEntryMap
@@ -214,6 +233,32 @@ nonindentedline = do
     notFollowedBy (char ' ' <|> char '\t')
     manyTill anySingle (try (void newline) <|> eof)
 
+nestedKV2P :: Parser KV2
+nestedKV2P = do
+    k   <- manyTill anySingle (char '=')
+    mnl <- optional (lookAhead anySingle)
+    v   <- case mnl of
+        Nothing   -> error "eof"
+        Just '\n' -> toN <$> parseindented
+        Just _    -> S . strip <$> many (satisfy (/= '\n'))
+    pure $ KV2 (strip k) v
+  where
+    parseindented = do
+        _  <- newline
+        ls <- fmap strip <$> some indentedline'
+        pure (unlines ls)
+
+toN :: String -> Value
+toN s = case parse nestedKV2P "" (T.pack s) of
+    Left err -> error $ show err
+    Right kv -> N kv
+
+nestedKV2P' :: Parser KV2
+nestedKV2P' = KV2 . strip <$> key2P <*> val2P
+  where
+    key2P = manyTill anySingle (char '=')
+    val2P = S <$> manyTill anySingle eof
+
 ----------------------------------------
 -- END nested experiment
 ----------------------------------------
@@ -288,6 +333,9 @@ parseNested = parse (nested <* eof) ""
 
 parseFile :: FilePath -> IO ()
 parseFile = TIO.readFile >=> parseTest (kvsP' <* eof)
+
+parseFileWith :: Show a => Parser a ->FilePath -> IO ()
+parseFileWith parser = TIO.readFile >=> parseTest (parser <* eof)
 
 -- kvP :: Parser KV
 -- kvP = label "key value pair" $ do
