@@ -3,6 +3,8 @@
 
 !src
 !src/**
+!app
+!app/**
 !*cabal
 
 !*.md
